@@ -1,0 +1,33 @@
+# Environment and secrets
+.env
+.env.local
+.env.production
+*.env
+
+# Database
+*.db
+*.sqlite3
+trading_bot.db
+
+# Python
+__pycache__/
+*.pyc
+venv/
+trading_env/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# API Keys (extra protection)
+*api_key*
+*secret*
+
+# Temporary files
+tmp/
+temp/

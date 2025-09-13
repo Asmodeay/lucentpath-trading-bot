@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-md w-full space-y-8" x-data="authForm()">
+        <div>
+            <h2 class="mt-6 text-center text-3xl font-extrabold text-gray-900">
+                {% if mode == 'register' %}Create your account{% else %}Sign in to your account{% endif %}
+            </h2>
+        </div>
+        
+        <form class="mt-8 space-y-6" @submit.prevent="submitForm">
+            <div class="rounded-md shadow-sm -space-y-px">
+                {% if mode == 'register' %}
+                <div>
+                    <input x-model="form.username" type="text" required class="relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="Username">
+                </div>
+                <div>
+                    <input x-model="form.email" type="email" required class="relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="Email address">
+                </div>
+                {% else %}
+                <div>
+                    <input x-model="form.username" type="text" required class="relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="Username">
+                </div>
+                {% endif %}
+                <div>
+                    <input x-model="form.password" type="password" required class="relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="Password">
+                </div>
+            </div>
+
+            <div x-show="error" class="text-red-600 text-sm" x-text="error"></div>
+
+            <div>
+                <button type="submit" :disabled="loading" class="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50">
+                    <span x-show="!loading">{% if mode == 'register' %}Create Account{% else %}Sign In{% endif %}</span>
+                    <span x-show="loading">Loading...</span>
+                </button>
+            </div>
+
+            <div class="text-center">
+                {% if mode == 'register' %}
+                    <a href="{{ url_for('login') }}" class="text-blue-600 hover:text-blue-500">Already have an account? Sign in</a>
+                {% else %}
+                    <a href="{{ url_for('register') }}" class="text-blue-600 hover:text-blue-500">Don't have an account? Sign up</a>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function authForm() {
+    return {
+        form: {
+            username: '',
+            {% if mode == 'register' %}email: '',{% endif %}
+            password: ''
+        },
+        loading: false,
+        error: '',
+        
+        async submitForm() {
+            this.loading = true;
+            this.error = '';
+            
+            try {
+                const response = await fetch('{{ url_for(mode) }}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(this.form)
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    window.location.href = data.redirect;
+                } else {
+                    this.error = data.error || 'An error occurred';
+                }
+            } catch (err) {
+                this.error = 'Network error. Please try again.';
+            } finally {
+                this.loading = false;
+            }
+        }
+    }
+}
+</script>
+{% endblock %}

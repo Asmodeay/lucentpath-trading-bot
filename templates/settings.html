@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="px-4 py-6" x-data="settingsManager()">
+    <h1 class="text-2xl font-bold text-gray-900 mb-8">Settings</h1>
+    
+    <!-- API Keys Section -->
+    <div class="bg-white rounded-lg shadow mb-8">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h3 class="text-lg font-medium text-gray-900">Exchange API Keys</h3>
+            <p class="text-sm text-gray-500">Add your exchange API keys to enable trading</p>
+        </div>
+        <div class="p-6">
+            <!-- Add API Key Form -->
+            <form @submit.prevent="saveApiKeys" class="space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Exchange</label>
+                        <select x-model="apiForm.exchange" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                            <option value="">Select Exchange</option>
+                            <option value="coinbase">Coinbase</option>
+                            <option value="binance">Binance US</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Environment</label>
+                        <select x-model="apiForm.is_sandbox" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                            <option value="true">Sandbox (Testing)</option>
+                            <option value="false">Live Trading</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">API Key</label>
+                    <input x-model="apiForm.api_key" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="Enter your API key">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Secret Key</label>
+                    <input x-model="apiForm.secret_key" type="password" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="Enter your secret key">
+                </div>
+                
+                <div x-show="message" class="p-3 rounded-md" :class="messageType === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'" x-text="message"></div>
+                
+                <button type="submit" :disabled="loading" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                    <span x-show="!loading">Save API Keys</span>
+                    <span x-show="loading">Saving...</span>
+                </button>
+            </form>
+            
+            <!-- Existing API Keys -->
+            <div class="mt-6">
+                <h4 class="font-medium mb-3">Configured Exchanges</h4>
+                <div x-show="apiKeys.length === 0" class="text-gray-500 italic">No API keys configured yet</div>
+                <div class="space-y-3">
+                    <template x-for="key in apiKeys" :key="key.id">
+                        <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                            <div>
+                                <p class="font-medium" x-text="key.exchange_name"></p>
+                                <p class="text-sm text-gray-500" x-text="(key.is_sandbox ? 'Sandbox' : 'Live') + ' • Added ' + key.created_at"></p>
+                            </div>
+                            <span class="px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full">Connected</span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bot Configuration Section -->
+    <div class="bg-white rounded-lg shadow">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h3 class="text-lg font-medium text-gray-900">Trading Configuration</h3>
+            <p class="text-sm text-gray-500">Set up your trading strategies and symbols</p>
+        </div>
+        <div class="p-6">
+            <form @submit.prevent="saveBotConfig" class="space-y-6">
+                <!-- Strategy Selection -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-3">Trading Strategies</label>
+                    <div class="space-y-2">
+                        <label class="flex items-center">
+                            <input type="checkbox" x-model="botConfig.strategies" value="sma_crossover" class="mr-2">
+                            <span>SMA Crossover Strategy</span>
+                            <span class="ml-2 px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">Basic+</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="checkbox" x-model="botConfig.strategies" value="rsi" class="mr-2">
+                            <span>RSI Strategy</span>
+                            <span class="ml-2 px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">Basic+</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Symbol Selection -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-3">Trading Symbols</label>
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                        <template x-for="symbol in availableSymbols" :key="symbol">
+                            <label class="flex items-center">
+                                <input type="checkbox" x-model="botConfig.symbols" :value="symbol" class="mr-2">
+                                <span x-text="symbol"></span>
+                            </label>
+                        </template>
+                    </div>
+                </div>
+
+                <div x-show="configMessage" class="p-3 rounded-md" :class="configMessageType === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'" x-text="configMessage"></div>
+
+                <button type="submit" :disabled="configLoading" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                    <span x-show="!configLoading">Save Configuration</span>
+                    <span x-show="configLoading">Saving...</span>
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function settingsManager() {
+    return {
+        loading: false,
+        message: '',
+        messageType: '',
+        configLoading: false,
+        configMessage: '',
+        configMessageType: '',
+        apiKeys: [],
+        apiForm: {
+            exchange: '',
+            api_key: '',
+            secret_key: '',
+            is_sandbox: 'true'
+        },
+        botConfig: {
+            strategies: [],
+            symbols: []
+        },
+        availableSymbols: ['BTC-USD', 'ETH-USD', 'ADA-USD', 'SOL-USD', 'MATIC-USD', 'LINK-USD', 'AVAX-USD', 'ATOM-USD', 'DOT-USD', 'LTC-USD'],
+        
+        async saveApiKeys() {
+            if (!this.apiForm.exchange || !this.apiForm.api_key || !this.apiForm.secret_key) {
+                this.showMessage('Please fill in all fields', 'error');
+                return;
+            }
+            
+            this.loading = true;
+            this.message = '';
+            
+            try {
+                const response = await fetch('/settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'save_api_keys',
+                        exchange: this.apiForm.exchange,
+                        api_key: this.apiForm.api_key,
+                        secret_key: this.apiForm.secret_key,
+                        is_sandbox: this.apiForm.is_sandbox === 'true'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    this.showMessage('API keys saved successfully!', 'success');
+                    // Reset form
+                    this.apiForm = {
+                        exchange: '',
+                        api_key: '',
+                        secret_key: '',
+                        is_sandbox: 'true'
+                    };
+                    // Refresh API keys list
+                    this.loadApiKeys();
+                } else {
+                    this.showMessage(data.error || 'Failed to save API keys', 'error');
+                }
+            } catch (err) {
+                this.showMessage('Network error. Please try again.', 'error');
+            } finally {
+                this.loading = false;
+            }
+        },
+        
+        async saveBotConfig() {
+            if (this.botConfig.strategies.length === 0) {
+                this.showConfigMessage('Please select at least one strategy', 'error');
+                return;
+            }
+            
+            if (this.botConfig.symbols.length === 0) {
+                this.showConfigMessage('Please select at least one symbol', 'error');
+                return;
+            }
+            
+            this.configLoading = true;
+            this.configMessage = '';
+            
+            try {
+                const response = await fetch('/settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'save_bot_config',
+                        strategies: this.botConfig.strategies,
+                        symbols: this.botConfig.symbols
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    this.showConfigMessage('Configuration saved successfully!', 'success');
+                } else {
+                    this.showConfigMessage(data.error || 'Failed to save configuration', 'error');
+                }
+            } catch (err) {
+                this.showConfigMessage('Network error. Please try again.', 'error');
+            } finally {
+                this.configLoading = false;
+            }
+        },
+        
+        async loadApiKeys() {
+            try {
+                const response = await fetch('/api/api-keys');
+                if (response.ok) {
+                    this.apiKeys = await response.json();
+                }
+            } catch (err) {
+                console.error('Failed to load API keys:', err);
+            }
+        },
+        
+        showMessage(msg, type) {
+            this.message = msg;
+            this.messageType = type;
+            setTimeout(() => {
+                this.message = '';
+            }, 5000);
+        },
+        
+        showConfigMessage(msg, type) {
+            this.configMessage = msg;
+            this.configMessageType = type;
+            setTimeout(() => {
+                this.configMessage = '';
+            }, 5000);
+        },
+        
+        init() {
+            this.loadApiKeys();
+        }
+    }
+}
+</script>
+{% endblock %}

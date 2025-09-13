@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="px-4 py-6">
+    <h1 class="text-2xl font-bold text-gray-900 mb-8">Subscription Management</h1>
+    
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-medium mb-4">Current Plan: {{ current_user.subscription_tier.title() }}</h2>
+        <p class="text-gray-600 mb-6">Manage your subscription and billing.</p>
+        
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="border rounded-lg p-4">
+                <h3 class="font-bold mb-2">Basic</h3>
+                <p class="text-2xl font-bold mb-2">$19/month</p>
+                <ul class="text-sm text-gray-600 mb-4">
+                    <li>• 2 Strategies</li>
+                    <li>• 5 Symbols</li>
+                    <li>• 10 Signals/hour</li>
+                </ul>
+                <button class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">Select</button>
+            </div>
+            
+            <div class="border rounded-lg p-4 ring-2 ring-blue-500">
+                <h3 class="font-bold mb-2">Pro</h3>
+                <p class="text-2xl font-bold mb-2">$49/month</p>
+                <ul class="text-sm text-gray-600 mb-4">
+                    <li>• 5 Strategies</li>
+                    <li>• 20 Symbols</li>
+                    <li>• 50 Signals/hour</li>
+                </ul>
+                <button class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">Select</button>
+            </div>
+            
+            <div class="border rounded-lg p-4">
+                <h3 class="font-bold mb-2">Premium</h3>
+                <p class="text-2xl font-bold mb-2">$99/month</p>
+                <ul class="text-sm text-gray-600 mb-4">
+                    <li>• All Strategies</li>
+                    <li>• Unlimited Symbols</li>
+                    <li>• Unlimited Signals</li>
+                </ul>
+                <button class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">Select</button>
+            </div>
+            
+            <div class="border rounded-lg p-4">
+                <h3 class="font-bold mb-2">Enterprise</h3>
+                <p class="text-2xl font-bold mb-2">$199/month</p>
+                <ul class="text-sm text-gray-600 mb-4">
+                    <li>• Everything</li>
+                    <li>• Multi-Exchange</li>
+                    <li>• Priority Support</li>
+                </ul>
+                <button class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">Select</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

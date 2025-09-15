@@ -292,15 +292,15 @@ class ExchangeConnector:
     
     def place_order(self, symbol: str, side: str, amount: float, price: Optional[float] = None) -> Dict:
         """Place an order - WITH SAFETY CHECKS"""
-        
+    
         # SAFETY CHECK: Don't place real orders if in "sandbox" mode
         if self.sandbox and self.exchange_name in ['coinbase', 'coinbaseadvanced']:
-            logger.warning("🛡️ SAFETY: Not placing real order - sandbox mode requested but not available")
+            logger.warning("🛡️ SAFETY MODE: Not placing real order")
             logger.warning(f"🛡️ Would place: {side.upper()} {amount} {symbol} at ${price if price else 'MARKET'}")
-            
-            # Return a fake order for testing
+        
+            # Return a simulated order
             return {
-                'id': 'SIMULATED_ORDER_12345',
+                'id': f'SIMULATED_ORDER_{int(time.time())}',
                 'symbol': symbol,
                 'side': side,
                 'amount': amount,
@@ -309,24 +309,23 @@ class ExchangeConnector:
                 'timestamp': datetime.now().isoformat(),
                 'info': 'This is a simulated order - no real trade executed'
             }
-        
+    
+        # If not in safety mode, place real order
         try:
-            # Handle symbol format conversion
             if self.exchange_name in ['coinbase', 'coinbaseadvanced']:
                 if '/' in symbol:
                     symbol = symbol.replace('/', '-')
-            
+        
             if price:
                 order = self.exchange.create_limit_order(symbol, side, amount, price)
             else:
                 order = self.exchange.create_market_order(symbol, side, amount)
-            
+        
             logger.info(f"🚨 REAL ORDER PLACED: {order}")
             return order
         except Exception as e:
             logger.error(f"Error placing order: {e}")
             return {}
-
         
 class TradingBot:
     """Main trading bot orchestrator"""

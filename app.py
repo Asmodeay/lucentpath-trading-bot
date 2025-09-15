@@ -13,6 +13,10 @@ from config import DEFAULT_CONFIG
 import stripe
 from dotenv import load_dotenv
 
+# Global dictionaries for bot management
+user_bots = {}
+user_bot_threads = {}
+
 # Load environment variables
 load_dotenv()
 
@@ -315,192 +319,495 @@ def subscription_success():
     
     return redirect(url_for('dashboard'))
 
-@app.route('/settings', methods=['GET', 'POST'])
+@app.route('/api/api-keys')
 @login_required
-def settings():
-    if request.method == 'POST':
-        data = request.get_json()
-        
-        if data.get('action') == 'save_api_keys':
-            # Save API keys
-            exchange = data.get('exchange')
-            api_key = data.get('api_key')
-            secret_key = data.get('secret_key')
-            is_sandbox = data.get('is_sandbox', True)
-            
-            # Delete existing API key for this exchange
-            APIKey.query.filter_by(user_id=current_user.id, exchange_name=exchange).delete()
-            
-            # Add new API key
-            new_api_key = APIKey(
-                user_id=current_user.id,
-                exchange_name=exchange,
-                api_key=api_key,
-                secret_key=secret_key,
-                is_sandbox=is_sandbox
-            )
-            db.session.add(new_api_key)
-            db.session.commit()
-            
-            return jsonify({'success': True})
-        
-        elif data.get('action') == 'save_bot_config':
-            # Save bot configuration
-            config_name = data.get('name', 'Default Config')
-            strategies = data.get('strategies', [])
-            symbols = data.get('symbols', [])
-            
-            # Validate against user's tier limits
-            tier_config = current_user.get_tier_config()
-            
-            if len(strategies) > tier_config['max_strategies'] and tier_config['max_strategies'] != -1:
-                return jsonify({'error': f'Too many strategies for your tier. Limit: {tier_config["max_strategies"]}'}), 400
-            
-            if len(symbols) > tier_config['max_symbols'] and tier_config['max_symbols'] != -1:
-                return jsonify({'error': f'Too many symbols for your tier. Limit: {tier_config["max_symbols"]}'}), 400
-            
-            # Create bot config
-            config_data = {
-                'strategies': strategies,
-                'symbols': symbols,
-                'cycle_interval': data.get('cycle_interval', 300)
-            }
-            
-            # Deactivate old configs
-            BotConfig.query.filter_by(user_id=current_user.id, is_active=True).update({'is_active': False})
-            
-            # Create new config
-            bot_config = BotConfig(
-                user_id=current_user.id,
-                name=config_name,
-                config_json=json.dumps(config_data),
-                is_active=True
-            )
-            db.session.add(bot_config)
-            db.session.commit()
-            
-            return jsonify({'success': True})
-    
-    # Get user's API keys and configs
-    api_keys = APIKey.query.filter_by(user_id=current_user.id).all()
-    bot_configs = BotConfig.query.filter_by(user_id=current_user.id).all()
-    
-    return render_template('settings.html', 
-                         user=current_user,
-                         api_keys=api_keys,
-                         bot_configs=bot_configs,
-                         tier_config=current_user.get_tier_config())
-
-@app.route('/bot/start', methods=['POST'])
-@login_required
-def start_bot():
-    if not current_user.is_subscription_active():
-        return jsonify({'error': 'Active subscription required'}), 403
-    
-    if current_user.id in user_bots:
-        return jsonify({'error': 'Bot already running'}), 400
-    
+def api_api_keys():
+    """Get user's API keys"""
     try:
-        # Get user's active config
-        bot_config = BotConfig.query.filter_by(user_id=current_user.id, is_active=True).first()
-        if not bot_config:
-            return jsonify({'error': 'No bot configuration found'}), 400
-        
-        # Get user's API keys
         api_keys = APIKey.query.filter_by(user_id=current_user.id).all()
-        if not api_keys:
-            return jsonify({'error': 'No API keys configured'}), 400
-        
-        # Build config for trading bot
-        config = json.loads(bot_config.config_json)
-        config['exchanges'] = []
-        
-        for api_key in api_keys:
-            config['exchanges'].append({
-                'name': api_key.exchange_name,
-                'api_key': api_key.api_key,
-                'secret': api_key.secret_key,
-                'sandbox': api_key.is_sandbox
-            })
-        
-        # Create and start bot in separate thread
-        bot = TradingBot(config)
-        
-        def run_bot():
-            try:
-                bot.start()
-            except Exception as e:
-                print(f"Bot error for user {current_user.id}: {e}")
-        
-        bot_thread = threading.Thread(target=run_bot)
-        bot_thread.daemon = True
-        bot_thread.start()
-        
-        user_bots[current_user.id] = bot
-        
-        return jsonify({'success': True, 'status': 'running'})
-        
+        return jsonify([{
+            'id': key.id,
+            'exchange_name': key.exchange_name,
+            'is_sandbox': key.is_sandbox,
+            'created_at': key.created_at.strftime('%m/%d/%Y')
+        } for key in api_keys])
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"API keys error: {str(e)}")
+        return jsonify([])
 
-@app.route('/bot/stop', methods=['POST'])
+@app.route('/api/bot-config')
 @login_required
-def stop_bot():
-    if current_user.id not in user_bots:
-        return jsonify({'error': 'Bot not running'}), 400
-    
+def api_bot_config():
+    """Get user's bot configurations"""
     try:
-        user_bots[current_user.id].stop()
-        del user_bots[current_user.id]
-        return jsonify({'success': True, 'status': 'stopped'})
+        configs = BotConfig.query.filter_by(user_id=current_user.id).all()
+        return jsonify([{
+            'id': config.id,
+            'name': config.name,
+            'is_active': config.is_active,
+            'created_at': config.created_at.strftime('%m/%d/%Y'),
+            'config_data': json.loads(config.config_json) if config.config_json else {}
+        } for config in configs])
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/bot/status')
-@login_required
-def bot_status():
-    is_running = current_user.id in user_bots
-    
-    status_data = {
-        'running': is_running,
-        'subscription_active': current_user.is_subscription_active(),
-        'tier': current_user.subscription_tier
-    }
-    
-    if is_running:
-        bot = user_bots[current_user.id]
-        stats = bot.get_performance_stats()
-        status_data.update(stats)
-    
-    return jsonify(status_data)
+        print(f"Bot config error: {str(e)}")
+        return jsonify([])
 
 @app.route('/api/trades')
 @login_required
 def api_trades():
-    page = request.args.get('page', 1, type=int)
-    per_page = 20
+    """Get user's trade history"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = 20
+        
+        trades = TradeRecord.query.filter_by(user_id=current_user.id)\
+                                 .order_by(TradeRecord.executed_at.desc())\
+                                 .paginate(page=page, per_page=per_page, error_out=False)
+        
+        return jsonify({
+            'trades': [{
+                'id': trade.id,
+                'symbol': trade.symbol,
+                'side': trade.side,
+                'amount': trade.amount,
+                'price': trade.price,
+                'strategy': trade.strategy,
+                'exchange': trade.exchange,
+                'pnl': trade.pnl,
+                'status': trade.status,
+                'executed_at': trade.executed_at.isoformat()
+            } for trade in trades.items],
+            'has_next': trades.has_next,
+            'has_prev': trades.has_prev,
+            'total': trades.total
+        })
+    except Exception as e:
+        print(f"Trades error: {str(e)}")
+        return jsonify({'trades': [], 'total': 0})
+
+# Also fix the settings route to handle the POST properly
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    if request.method == 'POST':
+        try:
+            data = request.get_json()
+            print(f"Settings POST data: {data}")  # Debug log
+            
+            if not data:
+                return jsonify({'error': 'No data provided'}), 400
+            
+            action = data.get('action')
+            
+            if action == 'save_api_keys':
+                exchange = data.get('exchange')
+                api_key = data.get('api_key')
+                secret_key = data.get('secret_key')
+                is_sandbox = data.get('is_sandbox', True)
+                
+                print(f"Saving API keys: {exchange}, sandbox: {is_sandbox}")  # Debug
+                
+                if not exchange or not api_key or not secret_key:
+                    return jsonify({'error': 'All fields are required'}), 400
+                
+                try:
+                    # Delete existing API key for this exchange
+                    existing = APIKey.query.filter_by(user_id=current_user.id, exchange_name=exchange).first()
+                    if existing:
+                        db.session.delete(existing)
+                    
+                    # Add new API key
+                    new_api_key = APIKey(
+                        user_id=current_user.id,
+                        exchange_name=exchange,
+                        api_key=api_key,
+                        secret_key=secret_key,
+                        is_sandbox=is_sandbox
+                    )
+                    
+                    db.session.add(new_api_key)
+                    db.session.commit()
+                    
+                    print("API key saved successfully!")  # Debug
+                    return jsonify({'success': True})
+                    
+                except Exception as e:
+                    db.session.rollback()
+                    print(f"Database error: {str(e)}")
+                    return jsonify({'error': f'Database error: {str(e)}'}), 500
+            
+            elif action == 'save_bot_config':
+                strategies = data.get('strategies', [])
+                symbols = data.get('symbols', [])
+                
+                print(f"Saving bot config: strategies={strategies}, symbols={symbols}")  # Debug
+                
+                if not strategies:
+                    return jsonify({'error': 'Please select at least one strategy'}), 400
+                
+                if not symbols:
+                    return jsonify({'error': 'Please select at least one symbol'}), 400
+                
+                try:
+                    # Create config data
+                    config_data = {
+                        'strategies': [{'type': s} for s in strategies],
+                        'symbols': [{'symbol': s, 'exchange': 'coinbase'} for s in symbols],
+                        'cycle_interval': 300
+                    }
+                    
+                    # Deactivate old configs
+                    old_configs = BotConfig.query.filter_by(user_id=current_user.id, is_active=True).all()
+                    for config in old_configs:
+                        config.is_active = False
+                    
+                    # Create new config
+                    from datetime import datetime
+                    bot_config = BotConfig(
+                        user_id=current_user.id,
+                        name=f'Config {datetime.utcnow().strftime("%Y-%m-%d %H:%M")}',
+                        config_json=json.dumps(config_data),
+                        is_active=True
+                    )
+                    
+                    db.session.add(bot_config)
+                    db.session.commit()
+                    
+                    print("Bot config saved successfully!")  # Debug
+                    return jsonify({'success': True})
+                    
+                except Exception as e:
+                    db.session.rollback()
+                    print(f"Config save error: {str(e)}")
+                    return jsonify({'error': f'Database error: {str(e)}'}), 500
+            
+            else:
+                return jsonify({'error': f'Unknown action: {action}'}), 400
+                
+        except Exception as e:
+            print(f"Settings error: {str(e)}")
+            return jsonify({'error': f'Server error: {str(e)}'}), 500
     
-    trades = TradeRecord.query.filter_by(user_id=current_user.id)\
-                             .order_by(TradeRecord.executed_at.desc())\
-                             .paginate(page=page, per_page=per_page, error_out=False)
+    # GET request
+    return render_template('settings.html', user=current_user)
+
+# Bot control endpoints
+@app.route('/bot/start', methods=['POST'])
+@login_required
+def start_bot():
+    """Start the user's trading bot"""
+    try:
+        user_id = current_user.id
+        
+        # Check if bot is already running
+        if user_id in user_bots and user_bot_threads.get(user_id) and user_bot_threads[user_id].is_alive():
+            return jsonify({'error': 'Bot is already running'}), 400
+        
+        # Check subscription
+        if not current_user.is_subscription_active():
+            return jsonify({'error': 'Active subscription required'}), 403
+        
+        print(f"🚀 Starting bot for user {current_user.username} (ID: {user_id})")
+        
+        # Get user's API keys
+        api_keys = APIKey.query.filter_by(user_id=user_id).all()
+        if not api_keys:
+            return jsonify({'error': 'No API keys configured. Please add your exchange API keys in Settings.'}), 400
+        
+        print(f"✅ Found {len(api_keys)} API keys")
+        
+        # Get user's active bot config
+        bot_config = BotConfig.query.filter_by(user_id=user_id, is_active=True).first()
+        if not bot_config:
+            return jsonify({'error': 'No bot configuration found. Please configure your strategies in Settings.'}), 400
+        
+        print(f"✅ Found active bot config: {bot_config.name}")
+        
+        # Parse the config
+        try:
+            config_data = json.loads(bot_config.config_json)
+            print(f"✅ Config parsed: {len(config_data.get('strategies', []))} strategies, {len(config_data.get('symbols', []))} symbols")
+        except Exception as e:
+            return jsonify({'error': f'Invalid bot configuration: {str(e)}'}), 400
+        
+        # Build the trading bot config
+        trading_config = {
+            'exchanges': [],
+            'strategies': config_data.get('strategies', []),
+            'symbols': config_data.get('symbols', []),
+            'cycle_interval': config_data.get('cycle_interval', 300)
+        }
+        
+        # Add exchange configurations
+        for api_key in api_keys:
+            exchange_config = {
+                'name': api_key.exchange_name,
+                'api_key': api_key.api_key,
+                'secret': api_key.secret_key,
+                'sandbox': api_key.is_sandbox
+            }
+            trading_config['exchanges'].append(exchange_config)
+        
+        print(f"✅ Trading config built with {len(trading_config['exchanges'])} exchanges")
+        
+        # Create the trading bot
+        from core_engine import TradingBot
+        bot = TradingBot(trading_config)
+        print("✅ Trading bot created successfully")
+        
+        # Test the bot with one analysis cycle first
+        print("🧪 Testing bot with one analysis cycle...")
+        try:
+            bot.run_analysis_cycle()
+            print("✅ Test analysis cycle completed successfully")
+        except Exception as e:
+            print(f"❌ Test analysis failed: {e}")
+            return jsonify({'error': f'Bot test failed: {str(e)}'}), 500
+        
+        # Store the bot instance
+        user_bots[user_id] = bot
+        
+        # Create a function to run the bot continuously
+        def run_bot_continuously():
+            try:
+                print(f"🔄 Starting continuous bot for user {user_id}")
+                
+                # Override execute_signal for safety if in sandbox mode
+                original_execute = bot.execute_signal
+                def safe_execute_signal(signal, exchange_name):
+                    # Check if any exchange is in sandbox mode
+                    exchange = bot.exchanges.get(exchange_name)
+                    if exchange and exchange.sandbox:
+                        print(f"🛡️ SAFE MODE: {signal.action.value.upper()} {signal.symbol} at ${signal.price:.2f} (SIMULATED)")
+                        
+                        # Create a simulated trade record
+                        try:
+                            trade_record = TradeRecord(
+                                user_id=user_id,
+                                symbol=signal.symbol,
+                                side=signal.action.value,
+                                amount=0.001,  # Small simulated amount
+                                price=signal.price,
+                                strategy=signal.strategy.value,
+                                exchange=exchange_name,
+                                order_id=f'SIM_{int(time.time())}',
+                                status='simulated',
+                                pnl=0.0
+                            )
+                            db.session.add(trade_record)
+                            db.session.commit()
+                            print(f"✅ Simulated trade recorded")
+                        except Exception as e:
+                            print(f"⚠️ Failed to record simulated trade: {e}")
+                    else:
+                        # Real trading - call original method
+                        print(f"🚨 LIVE TRADE: {signal.action.value.upper()} {signal.symbol} at ${signal.price:.2f}")
+                        original_execute(signal, exchange_name)
+                
+                bot.execute_signal = safe_execute_signal
+                
+                # Run the bot
+                while user_id in user_bots:
+                    try:
+                        print(f"🔄 Running analysis cycle for user {user_id}")
+                        bot.run_analysis_cycle()
+                        
+                        # Sleep for the configured interval
+                        sleep_time = trading_config.get('cycle_interval', 300)
+                        print(f"😴 Sleeping for {sleep_time} seconds...")
+                        
+                        # Sleep in small chunks so we can stop quickly
+                        for _ in range(sleep_time):
+                            if user_id not in user_bots:
+                                break
+                            time.sleep(1)
+                            
+                    except Exception as e:
+                        print(f"❌ Error in bot cycle for user {user_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        time.sleep(60)  # Wait 1 minute before retrying
+                        
+                print(f"🛑 Bot stopped for user {user_id}")
+                
+            except Exception as e:
+                print(f"❌ Bot thread error for user {user_id}: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                # Clean up
+                if user_id in user_bots:
+                    del user_bots[user_id]
+                if user_id in user_bot_threads:
+                    del user_bot_threads[user_id]
+        
+        # Start the bot in a separate thread
+        bot_thread = threading.Thread(target=run_bot_continuously, daemon=True)
+        bot_thread.start()
+        user_bot_threads[user_id] = bot_thread
+        
+        print(f"✅ Bot thread started for user {user_id}")
+        
+        return jsonify({
+            'success': True, 
+            'message': 'Trading bot started successfully!',
+            'status': 'running'
+        })
+        
+    except Exception as e:
+        print(f"❌ Failed to start bot for user {current_user.id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to start bot: {str(e)}'}), 500
+
+@app.route('/bot/stop', methods=['POST'])
+@login_required
+def stop_bot():
+    """Stop the user's trading bot"""
+    try:
+        user_id = current_user.id
+        
+        print(f"🛑 Stopping bot for user {current_user.username} (ID: {user_id})")
+        
+        # Check if bot is running
+        if user_id not in user_bots:
+            return jsonify({'error': 'Bot is not running'}), 400
+        
+        # Stop the bot by removing it from the dictionary
+        if user_id in user_bots:
+            print(f"✅ Removed bot from active bots")
+            del user_bots[user_id]
+        
+        # Wait a moment for the thread to finish
+        if user_id in user_bot_threads:
+            thread = user_bot_threads[user_id]
+            if thread.is_alive():
+                print("⏳ Waiting for bot thread to finish...")
+                thread.join(timeout=5)  # Wait up to 5 seconds
+            del user_bot_threads[user_id]
+        
+        print(f"✅ Bot stopped for user {user_id}")
+        
+        return jsonify({
+            'success': True, 
+            'message': 'Trading bot stopped successfully!',
+            'status': 'stopped'
+        })
+        
+    except Exception as e:
+        print(f"❌ Failed to stop bot for user {current_user.id}: {str(e)}")
+        return jsonify({'error': f'Failed to stop bot: {str(e)}'}), 500
+    
+@app.route('/bot/status')
+@login_required
+def bot_status():
+    """Get bot status for user"""
+    try:
+        user_id = current_user.id
+        
+        # Check if bot is running
+        is_running = (user_id in user_bots and 
+                     user_id in user_bot_threads and 
+                     user_bot_threads[user_id].is_alive())
+        
+        # Get some basic stats
+        total_trades = TradeRecord.query.filter_by(user_id=user_id).count()
+        
+        return jsonify({
+            'running': is_running,
+            'subscription_active': current_user.is_subscription_active(),
+            'tier': current_user.subscription_tier,
+            'total_trades': total_trades,
+            'user_id': user_id  # For debugging
+        })
+        
+    except Exception as e:
+        print(f"❌ Bot status error for user {current_user.id}: {e}")
+        return jsonify({
+            'running': False,
+            'subscription_active': False,
+            'tier': 'free',
+            'error': str(e)
+        })
+# Also add a route to see all running bots (for debugging)
+@app.route('/admin/bots')
+@login_required
+def admin_bots():
+    """Admin view of all running bots"""
+    if current_user.subscription_tier != 'enterprise':
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    running_bots = []
+    for user_id, bot in user_bots.items():
+        user = User.query.get(user_id)
+        thread = user_bot_threads.get(user_id)
+        
+        running_bots.append({
+            'user_id': user_id,
+            'username': user.username if user else 'Unknown',
+            'thread_alive': thread.is_alive() if thread else False,
+            'strategies': len(bot.strategies) if bot else 0,
+            'exchanges': len(bot.exchanges) if bot else 0
+        })
     
     return jsonify({
-        'trades': [{
-            'id': trade.id,
-            'symbol': trade.symbol,
-            'side': trade.side,
-            'amount': trade.amount,
-            'price': trade.price,
-            'strategy': trade.strategy,
-            'exchange': trade.exchange,
-            'pnl': trade.pnl,
-            'status': trade.status,
-            'executed_at': trade.executed_at.isoformat()
-        } for trade in trades.items],
-        'has_next': trades.has_next,
-        'has_prev': trades.has_prev,
-        'total': trades.total
+        'total_running_bots': len(user_bots),
+        'bots': running_bots
     })
+
+# Clean up function when app shuts down
+import atexit
+
+def cleanup_bots():
+    """Clean up all running bots when app shuts down"""
+    print("🧹 Cleaning up all running bots...")
+    global user_bots, user_bot_threads
+    
+    # Stop all bots
+    for user_id in list(user_bots.keys()):
+        if user_id in user_bots:
+            del user_bots[user_id]
+    
+    # Wait for threads to finish
+    for user_id, thread in user_bot_threads.items():
+        if thread.is_alive():
+            thread.join(timeout=2)
+    
+    user_bot_threads.clear()
+    print("✅ All bots cleaned up")
+
+atexit.register(cleanup_bots)
+
+@app.route('/bot/test')
+@login_required
+def test_bot_setup():
+    """Test what's available for bot setup"""
+    try:
+        user_id = current_user.id
+        
+        # Check API keys
+        api_keys = APIKey.query.filter_by(user_id=user_id).all()
+        
+        # Check bot config
+        bot_config = BotConfig.query.filter_by(user_id=user_id, is_active=True).first()
+        
+        # Check imports
+        try:
+            from core_engine import TradingBot
+            trading_bot_available = True
+        except Exception as e:
+            trading_bot_available = str(e)
+        
+        return jsonify({
+            'user_id': user_id,
+            'api_keys_count': len(api_keys),
+            'has_bot_config': bot_config is not None,
+            'trading_bot_available': trading_bot_available,
+            'subscription_active': current_user.is_subscription_active()
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # Webhook for Stripe events
 @app.route('/webhook/stripe', methods=['POST'])

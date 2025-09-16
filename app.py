@@ -12,6 +12,16 @@ from core_engine import TradingBot, TradingStrategy
 from config import DEFAULT_CONFIG
 import stripe
 from dotenv import load_dotenv
+from enhanced_risk_management import (
+    RiskManager, 
+    Position, 
+    PositionStatus, 
+    FairValueGapStrategy,
+    save_positions, 
+    load_positions, 
+    get_available_coins,
+    TIER_COINS
+)
 
 # Global dictionaries for bot management
 user_bots = {}

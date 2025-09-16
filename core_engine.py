@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 import json
 from dataclasses import dataclass
 from enum import Enum
+from enhanced_risk_management import RiskManager, Position, PositionStatus, save_positions, load_positions
 
 # Configure logging
 logging.basicConfig(
@@ -28,6 +29,14 @@ class OrderType(Enum):
 class StrategyType(Enum):
     SMA_CROSSOVER = "sma_crossover"
     RSI_OVERSOLD = "rsi_oversold"
+    MACD = "macd"
+    BOLLINGER_BANDS = "bollinger_bands"
+    FAIR_VALUE_GAP = "fair_value_gap"
+
+class PositionStatus(Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    PARTIAL = "partial"
 
 @dataclass
 class TradeSignal:
@@ -39,40 +48,24 @@ class TradeSignal:
     confidence: float
     timestamp: datetime
 
-class RiskManager:
-    """Handles risk management and position sizing"""
+class Position:
+    symbol: str
+    side: str  # 'buy' or 'sell'
+    size: float
+    entry_price: float
+    current_price: float
+    entry_time: datetime
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    unrealized_pnl: float = 0.0
+    status: PositionStatus = PositionStatus.OPEN
     
-    def __init__(self, max_position_size: float = 0.1, max_daily_loss: float = 0.05):
-        self.max_position_size = max_position_size  # Max % of portfolio per trade
-        self.max_daily_loss = max_daily_loss        # Max daily loss %
-        self.daily_pnl = 0.0
-        self.daily_reset_time = datetime.now().date()
-    
-    def calculate_position_size(self, balance: float, price: float, risk_per_trade: float = 0.02) -> float:
-        """Calculate position size based on risk management rules"""
-        # Reset daily PnL if new day
-        if datetime.now().date() > self.daily_reset_time:
-            self.daily_pnl = 0.0
-            self.daily_reset_time = datetime.now().date()
-        
-        # Check if daily loss limit reached
-        if abs(self.daily_pnl) >= self.max_daily_loss * balance:
-            logger.warning("Daily loss limit reached. No new trades.")
-            return 0.0
-        
-        # Calculate position size (risk-based)
-        risk_amount = balance * risk_per_trade
-        position_size = risk_amount / price
-        
-        # Apply maximum position size limit
-        max_position_value = balance * self.max_position_size
-        max_position_size = max_position_value / price
-        
-        return min(position_size, max_position_size)
-    
-    def update_pnl(self, pnl: float):
-        """Update daily PnL tracking"""
-        self.daily_pnl += pnl
+    def update_current_price(self, price: float):
+        self.current_price = price
+        if self.side == 'buy':
+            self.unrealized_pnl = (price - self.entry_price) * self.size
+        else:
+            self.unrealized_pnl = (self.entry_price - price) * self.size
 
 class TradingStrategy:
     """Base class for all trading strategies"""
@@ -183,6 +176,216 @@ class RSIStrategy(TradingStrategy):
                 quantity=0,
                 strategy=StrategyType.RSI_OVERSOLD,
                 confidence=0.6,
+                timestamp=datetime.now()
+            )
+        
+        return None
+
+class FairValueGapStrategy(TradingStrategy):
+    """Fair Value Gap Strategy - Identifies imbalances in price action"""
+    
+    def __init__(self, lookback_period: int = 20, min_gap_size: float = 0.002):
+        super().__init__("Fair_Value_Gap")
+        self.lookback_period = lookback_period
+        self.min_gap_size = min_gap_size  # Minimum gap size as percentage
+        self.required_candles = lookback_period + 5
+    
+    def identify_fair_value_gaps(self, df: pd.DataFrame) -> List[Dict]:
+        """Identify fair value gaps in the price data"""
+        gaps = []
+        
+        for i in range(2, len(df) - 1):
+            # Check for bullish gap (gap up)
+            if (df['low'].iloc[i] > df['high'].iloc[i-2] and 
+                df['low'].iloc[i-1] > df['high'].iloc[i-2]):
+                
+                gap_size = (df['low'].iloc[i] - df['high'].iloc[i-2]) / df['close'].iloc[i-2]
+                if gap_size >= self.min_gap_size:
+                    gaps.append({
+                        'type': 'bullish',
+                        'gap_low': df['high'].iloc[i-2],
+                        'gap_high': df['low'].iloc[i],
+                        'gap_size': gap_size,
+                        'index': i,
+                        'filled': False
+                    })
+            
+            # Check for bearish gap (gap down)
+            elif (df['high'].iloc[i] < df['low'].iloc[i-2] and 
+                  df['high'].iloc[i-1] < df['low'].iloc[i-2]):
+                
+                gap_size = (df['low'].iloc[i-2] - df['high'].iloc[i]) / df['close'].iloc[i-2]
+                if gap_size >= self.min_gap_size:
+                    gaps.append({
+                        'type': 'bearish',
+                        'gap_low': df['high'].iloc[i],
+                        'gap_high': df['low'].iloc[i-2],
+                        'gap_size': gap_size,
+                        'index': i,
+                        'filled': False
+                    })
+        
+        return gaps
+    
+    def generate_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradeSignal]:
+        if len(df) < self.required_candles:
+            return None
+        
+        gaps = self.identify_fair_value_gaps(df)
+        if not gaps:
+            return None
+        
+        current_price = df['close'].iloc[-1]
+        current_high = df['high'].iloc[-1]
+        current_low = df['low'].iloc[-1]
+        
+        # Check for gap fill opportunities
+        for gap in gaps[-3:]:  # Check last 3 gaps
+            if gap['filled']:
+                continue
+                
+            # Bullish gap - look for price returning to fill gap (sell opportunity)
+            if (gap['type'] == 'bullish' and 
+                current_low <= gap['gap_high'] and 
+                current_price > gap['gap_low']):
+                
+                return TradeSignal(
+                    symbol=symbol,
+                    action=OrderType.SELL,
+                    price=current_price,
+                    quantity=0,
+                    strategy=StrategyType.FAIR_VALUE_GAP,
+                    confidence=0.75,
+                    timestamp=datetime.now()
+                )
+            
+            # Bearish gap - look for price returning to fill gap (buy opportunity)
+            elif (gap['type'] == 'bearish' and 
+                  current_high >= gap['gap_low'] and 
+                  current_price < gap['gap_high']):
+                
+                return TradeSignal(
+                    symbol=symbol,
+                    action=OrderType.BUY,
+                    price=current_price,
+                    quantity=0,
+                    strategy=StrategyType.FAIR_VALUE_GAP,
+                    confidence=0.75,
+                    timestamp=datetime.now()
+                )
+        
+        return None
+
+class MACDStrategy(TradingStrategy):
+    """MACD Strategy with signal line crossovers"""
+    
+    def __init__(self, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9):
+        super().__init__("MACD_Strategy")
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        self.signal_period = signal_period
+        self.required_candles = slow_period + signal_period + 5
+    
+    def calculate_macd(self, prices: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """Calculate MACD, Signal line, and Histogram"""
+        ema_fast = prices.ewm(span=self.fast_period).mean()
+        ema_slow = prices.ewm(span=self.slow_period).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=self.signal_period).mean()
+        histogram = macd_line - signal_line
+        
+        return macd_line, signal_line, histogram
+    
+    def generate_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradeSignal]:
+        if len(df) < self.required_candles:
+            return None
+        
+        macd, signal, histogram = self.calculate_macd(df['close'])
+        
+        current_macd = macd.iloc[-1]
+        current_signal = signal.iloc[-1]
+        prev_macd = macd.iloc[-2]
+        prev_signal = signal.iloc[-2]
+        current_price = df['close'].iloc[-1]
+        
+        # Bullish signal: MACD crosses above signal line
+        if prev_macd <= prev_signal and current_macd > current_signal and current_macd < 0:
+            return TradeSignal(
+                symbol=symbol,
+                action=OrderType.BUY,
+                price=current_price,
+                quantity=0,
+                strategy=StrategyType.MACD,
+                confidence=0.7,
+                timestamp=datetime.now()
+            )
+        
+        # Bearish signal: MACD crosses below signal line
+        elif prev_macd >= prev_signal and current_macd < current_signal and current_macd > 0:
+            return TradeSignal(
+                symbol=symbol,
+                action=OrderType.SELL,
+                price=current_price,
+                quantity=0,
+                strategy=StrategyType.MACD,
+                confidence=0.7,
+                timestamp=datetime.now()
+            )
+        
+        return None
+
+class BollingerBandsStrategy(TradingStrategy):
+    """Bollinger Bands Strategy"""
+    
+    def __init__(self, period: int = 20, std_dev: float = 2.0):
+        super().__init__("Bollinger_Bands")
+        self.period = period
+        self.std_dev = std_dev
+        self.required_candles = period + 5
+    
+    def calculate_bollinger_bands(self, prices: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """Calculate Bollinger Bands"""
+        sma = prices.rolling(window=self.period).mean()
+        std = prices.rolling(window=self.period).std()
+        upper_band = sma + (std * self.std_dev)
+        lower_band = sma - (std * self.std_dev)
+        
+        return upper_band, sma, lower_band
+    
+    def generate_signal(self, df: pd.DataFrame, symbol: str) -> Optional[TradeSignal]:
+        if len(df) < self.required_candles:
+            return None
+        
+        upper_band, middle_band, lower_band = self.calculate_bollinger_bands(df['close'])
+        
+        current_price = df['close'].iloc[-1]
+        prev_price = df['close'].iloc[-2]
+        current_upper = upper_band.iloc[-1]
+        current_lower = lower_band.iloc[-1]
+        prev_upper = upper_band.iloc[-2]
+        prev_lower = lower_band.iloc[-2]
+        
+        # Buy signal: Price bounces off lower band
+        if prev_price <= prev_lower and current_price > current_lower:
+            return TradeSignal(
+                symbol=symbol,
+                action=OrderType.BUY,
+                price=current_price,
+                quantity=0,
+                strategy=StrategyType.BOLLINGER_BANDS,
+                confidence=0.65,
+                timestamp=datetime.now()
+            )
+        
+        # Sell signal: Price bounces off upper band
+        elif prev_price >= prev_upper and current_price < current_upper:
+            return TradeSignal(
+                symbol=symbol,
+                action=OrderType.SELL,
+                price=current_price,
+                quantity=0,
+                strategy=StrategyType.BOLLINGER_BANDS,
+                confidence=0.65,
                 timestamp=datetime.now()
             )
         
@@ -334,9 +537,19 @@ class TradingBot:
         self.config = config
         self.exchanges = {}
         self.strategies = []
-        self.risk_manager = RiskManager()
+        user_id = config.get('user_id', 'default_user')
+        tier = config.get('tier', 'basic')
+        self.risk_manager = RiskManager(user_id, tier)
         self.is_running = False
         self.trade_history = []
+
+        # Load existing positions
+        self.risk_manager.positions = load_positions(user_id)
+    
+    # Apply custom risk settings if provided
+        if 'risk_settings' in config:
+            self.risk_manager.update_risk_settings(config['risk_settings'])
+    
         
         # Initialize exchanges
         self._initialize_exchanges()
@@ -406,57 +619,166 @@ class TradingBot:
         return signals
     
     def execute_signal(self, signal: TradeSignal, exchange_name: str):
-        """Execute a trading signal"""
-        if exchange_name not in self.exchanges:
-            logger.error(f"Exchange {exchange_name} not available")
-            return
+    """Execute a trading signal with enhanced risk management"""
+    if exchange_name not in self.exchanges:
+        logger.error(f"Exchange {exchange_name} not available")
+        return
+    
+    exchange = self.exchanges[exchange_name]
+    
+    # Get current balance
+    balance = exchange.get_balance()
+    if not balance:
+        logger.error("Could not fetch balance")
+        return
+    
+    # Calculate total portfolio value
+    total_balance = balance.get('total', {}).get('USDT', 0) or balance.get('total', {}).get('USD', 0)
+    if total_balance <= 0:
+        logger.error("Insufficient balance")
+        return
+    
+    # Enhanced risk management checks
+    can_trade, reason = self.risk_manager.can_open_new_position(total_balance)
+    if not can_trade:
+        logger.warning(f"Trade blocked by risk management: {reason}")
+        return
+    
+    # Get risk settings
+    settings = self.risk_manager.get_effective_settings()
+    
+    # Calculate stop loss and take profit prices
+    if signal.action.value == 'buy':
+        stop_loss_price = signal.price * (1 - settings['default_stop_loss']/100)
+        take_profit_price = signal.price * (1 + settings['default_take_profit']/100)
+    else:
+        stop_loss_price = signal.price * (1 + settings['default_stop_loss']/100)
+        take_profit_price = signal.price * (1 - settings['default_take_profit']/100)
+    
+    # Calculate enhanced position size
+    position_size = self.risk_manager.calculate_position_size(
+        signal.price, 
+        total_balance, 
+        stop_loss_price
+    )
+    
+    if position_size <= 0:
+        logger.warning("Position size too small or risk limits exceeded")
+        return
+    
+    # Execute trade
+    try:
+        order = exchange.place_order(
+            signal.symbol,
+            signal.action.value,
+            position_size
+        )
         
-        exchange = self.exchanges[exchange_name]
-        
-        # Get current balance
-        balance = exchange.get_balance()
-        if not balance:
-            logger.error("Could not fetch balance")
-            return
-        
-        # Calculate position size
-        total_balance = balance.get('total', {}).get('USDT', 0) or balance.get('total', {}).get('USD', 0)
-        if total_balance <= 0:
-            logger.error("Insufficient balance")
-            return
-        
-        position_size = self.risk_manager.calculate_position_size(total_balance, signal.price)
-        if position_size <= 0:
-            logger.warning("Position size too small or risk limits exceeded")
-            return
-        
-        # Execute trade
-        try:
-            order = exchange.place_order(
-                signal.symbol,
-                signal.action.value,
-                position_size
+        if order:
+            # Create position object for tracking
+            position = Position(
+                symbol=signal.symbol,
+                side=signal.action.value,
+                size=position_size,
+                entry_price=signal.price,
+                current_price=signal.price,
+                entry_time=datetime.now(),
+                stop_loss=stop_loss_price,
+                take_profit=take_profit_price,
+                exchange=exchange_name
             )
             
-            if order:
-                # Record trade
-                trade_record = {
-                    'timestamp': signal.timestamp,
-                    'symbol': signal.symbol,
-                    'action': signal.action.value,
-                    'price': signal.price,
-                    'quantity': position_size,
-                    'strategy': signal.strategy.value,
-                    'order_id': order.get('id')
-                }
-                self.trade_history.append(trade_record)
-                logger.info(f"Trade executed: {trade_record}")
+            # Add to risk manager
+            self.risk_manager.add_position(position)
+            
+            # Save positions
+            save_positions(self.risk_manager.user_id, self.risk_manager.positions)
+            
+            # Record trade (enhanced)
+            trade_record = {
+                'timestamp': signal.timestamp,
+                'symbol': signal.symbol,
+                'action': signal.action.value,
+                'price': signal.price,
+                'quantity': position_size,
+                'strategy': signal.strategy.value,
+                'order_id': order.get('id'),
+                'position_id': position.position_id,
+                'stop_loss': stop_loss_price,
+                'take_profit': take_profit_price,
+                'risk_settings': settings
+            }
+            self.trade_history.append(trade_record)
+            logger.info(f"Enhanced trade executed: {trade_record}")
+            
+    except Exception as e:
+        logger.error(f"Failed to execute trade: {e}")
+
+    def update_positions(self):
+    """Update current prices for all open positions"""
+    try:
+        for position in self.risk_manager.get_open_positions():
+            # Get current price from exchange
+            exchange = self.exchanges.get(position.exchange)
+            if exchange:
+                current_data = exchange.get_candles(position.symbol, limit=1)
+                if not current_data.empty:
+                    current_price = current_data['close'].iloc[-1]
+                    
+                    # Update position
+                    self.risk_manager.update_position_price(position.position_id, current_price)
+                    
+                    # Check for stop loss or take profit
+                    if position.side == 'buy':
+                        if current_price <= position.stop_loss or current_price >= position.take_profit:
+                            self.close_position(position, current_price)
+                    else:
+                        if current_price >= position.stop_loss or current_price <= position.take_profit:
+                            self.close_position(position, current_price)
+        
+        # Save updated positions
+        save_positions(self.risk_manager.user_id, self.risk_manager.positions)
+        
+    except Exception as e:
+        logger.error(f"Error updating positions: {e}")
+
+    def close_position(self, position: Position, close_price: float):
+        """Close a position"""
+        try:
+            exchange = self.exchanges.get(position.exchange)
+            if exchange:
+                # Execute close order
+                close_action = 'sell' if position.side == 'buy' else 'buy'
+                order = exchange.place_order(position.symbol, close_action, position.size)
+            
+                if order:
+                    # Update position status
+                    self.risk_manager.close_position(position.position_id, close_price)
+                
+                    logger.info(f"Position closed: {position.symbol} P&L: ${position.realized_pnl:.2f}")
+                
+                    # Record close trade
+                    close_record = {
+                        'timestamp': datetime.now(),
+                        'symbol': position.symbol,
+                        'action': 'close_' + position.side,
+                        'price': close_price,
+                        'quantity': position.size,
+                        'strategy': 'risk_management',
+                        'order_id': order.get('id'),
+                        'position_id': position.position_id,
+                        'pnl': position.realized_pnl
+                    }
+                    self.trade_history.append(close_record)
                 
         except Exception as e:
-            logger.error(f"Failed to execute trade: {e}")
-    
+            logger.error(f"Error closing position: {e}")
+
     def run_analysis_cycle(self):
         """Run one analysis cycle for all symbols"""
+        # Update existing positions first
+        self.update_positions()
+
         symbols = self.config.get('symbols', [])
         
         for symbol_config in symbols:
@@ -507,6 +829,14 @@ class TradingBot:
             return {}
         
         df = pd.DataFrame(self.trade_history)
+
+        # Get position statistics
+        open_positions = self.risk_manager.get_open_positions()
+        total_unrealized_pnl = self.risk_manager.get_total_unrealized_pnl()
+    
+        # Calculate realized P&L from closed positions
+        closed_trades = [t for t in self.trade_history if 'pnl' in t]
+        total_realized_pnl = sum(t['pnl'] for t in closed_trades)
         
         stats = {
             'total_trades': len(df),
@@ -517,9 +847,16 @@ class TradingBot:
             'trading_period': {
                 'start': df['timestamp'].min(),
                 'end': df['timestamp'].max()
-            }
+            },
+            'positions': {
+                'open_positions': len(open_positions),
+                'total_unrealized_pnl': total_unrealized_pnl,
+                'total_realized_pnl': total_realized_pnl,
+                'total_pnl': total_unrealized_pnl + total_realized_pnl
+            },
+            'risk_metrics': self.risk_manager.get_effective_settings()
         }
-        
+    
         return stats
 
 # Example usage and testing

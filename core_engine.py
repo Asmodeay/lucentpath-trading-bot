@@ -619,128 +619,128 @@ class TradingBot:
         return signals
     
     def execute_signal(self, signal: TradeSignal, exchange_name: str):
-    """Execute a trading signal with enhanced risk management"""
-    if exchange_name not in self.exchanges:
-        logger.error(f"Exchange {exchange_name} not available")
-        return
+        """Execute a trading signal with enhanced risk management"""
+        if exchange_name not in self.exchanges:
+            logger.error(f"Exchange {exchange_name} not available")
+            return
     
-    exchange = self.exchanges[exchange_name]
+        exchange = self.exchanges[exchange_name]
     
-    # Get current balance
-    balance = exchange.get_balance()
-    if not balance:
-        logger.error("Could not fetch balance")
-        return
+        # Get current balance
+        balance = exchange.get_balance()
+        if not balance:
+            logger.error("Could not fetch balance")
+            return
     
-    # Calculate total portfolio value
-    total_balance = balance.get('total', {}).get('USDT', 0) or balance.get('total', {}).get('USD', 0)
-    if total_balance <= 0:
-        logger.error("Insufficient balance")
-        return
+        # Calculate total portfolio value
+        total_balance = balance.get('total', {}).get('USDT', 0) or balance.get('total', {}).get('USD', 0)
+        if total_balance <= 0:
+            logger.error("Insufficient balance")
+            return
     
-    # Enhanced risk management checks
-    can_trade, reason = self.risk_manager.can_open_new_position(total_balance)
-    if not can_trade:
-        logger.warning(f"Trade blocked by risk management: {reason}")
-        return
+        # Enhanced risk management checks
+        can_trade, reason = self.risk_manager.can_open_new_position(total_balance)
+        if not can_trade:
+            logger.warning(f"Trade blocked by risk management: {reason}")
+            return
     
-    # Get risk settings
-    settings = self.risk_manager.get_effective_settings()
+        # Get risk settings
+        settings = self.risk_manager.get_effective_settings()
     
-    # Calculate stop loss and take profit prices
-    if signal.action.value == 'buy':
-        stop_loss_price = signal.price * (1 - settings['default_stop_loss']/100)
-        take_profit_price = signal.price * (1 + settings['default_take_profit']/100)
-    else:
-        stop_loss_price = signal.price * (1 + settings['default_stop_loss']/100)
-        take_profit_price = signal.price * (1 - settings['default_take_profit']/100)
+        # Calculate stop loss and take profit prices
+        if signal.action.value == 'buy':
+            stop_loss_price = signal.price * (1 - settings['default_stop_loss']/100)
+            take_profit_price = signal.price * (1 + settings['default_take_profit']/100)
+        else:
+            stop_loss_price = signal.price * (1 + settings['default_stop_loss']/100)
+            take_profit_price = signal.price * (1 - settings['default_take_profit']/100)
     
-    # Calculate enhanced position size
-    position_size = self.risk_manager.calculate_position_size(
-        signal.price, 
-        total_balance, 
-        stop_loss_price
-    )
-    
-    if position_size <= 0:
-        logger.warning("Position size too small or risk limits exceeded")
-        return
-    
-    # Execute trade
-    try:
-        order = exchange.place_order(
-            signal.symbol,
-            signal.action.value,
-            position_size
+        # Calculate enhanced position size
+        position_size = self.risk_manager.calculate_position_size(
+            signal.price, 
+            total_balance, 
+            stop_loss_price
         )
-        
-        if order:
-            # Create position object for tracking
-            position = Position(
-                symbol=signal.symbol,
-                side=signal.action.value,
-                size=position_size,
-                entry_price=signal.price,
-                current_price=signal.price,
-                entry_time=datetime.now(),
-                stop_loss=stop_loss_price,
-                take_profit=take_profit_price,
-                exchange=exchange_name
+    
+        if position_size <= 0:
+            logger.warning("Position size too small or risk limits exceeded")
+            return
+    
+        # Execute trade
+        try:
+            order = exchange.place_order(
+                signal.symbol,
+                signal.action.value,
+                position_size
             )
+        
+            if order:
+                # Create position object for tracking
+                position = Position(
+                    symbol=signal.symbol,
+                    side=signal.action.value,
+                    size=position_size,
+                    entry_price=signal.price,
+                    current_price=signal.price,
+                    entry_time=datetime.now(),
+                    stop_loss=stop_loss_price,
+                    take_profit=take_profit_price,
+                    exchange=exchange_name
+                )
             
-            # Add to risk manager
-            self.risk_manager.add_position(position)
+                # Add to risk manager
+                self.risk_manager.add_position(position)
             
-            # Save positions
-            save_positions(self.risk_manager.user_id, self.risk_manager.positions)
+                # Save positions
+                save_positions(self.risk_manager.user_id, self.risk_manager.positions)
             
-            # Record trade (enhanced)
-            trade_record = {
-                'timestamp': signal.timestamp,
-                'symbol': signal.symbol,
-                'action': signal.action.value,
-                'price': signal.price,
-                'quantity': position_size,
-                'strategy': signal.strategy.value,
-                'order_id': order.get('id'),
-                'position_id': position.position_id,
-                'stop_loss': stop_loss_price,
-                'take_profit': take_profit_price,
-                'risk_settings': settings
-            }
-            self.trade_history.append(trade_record)
-            logger.info(f"Enhanced trade executed: {trade_record}")
+                # Record trade (enhanced)
+                trade_record = {
+                    'timestamp': signal.timestamp,
+                    'symbol': signal.symbol,
+                    'action': signal.action.value,
+                    'price': signal.price,
+                    'quantity': position_size,
+                    'strategy': signal.strategy.value,
+                    'order_id': order.get('id'),
+                    'position_id': position.position_id,
+                    'stop_loss': stop_loss_price,
+                    'take_profit': take_profit_price,
+                    'risk_settings': settings
+                }
+                self.trade_history.append(trade_record)
+                logger.info(f"Enhanced trade executed: {trade_record}")
             
-    except Exception as e:
-        logger.error(f"Failed to execute trade: {e}")
+        except Exception as e:
+            logger.error(f"Failed to execute trade: {e}")
 
     def update_positions(self):
-    """Update current prices for all open positions"""
-    try:
-        for position in self.risk_manager.get_open_positions():
-            # Get current price from exchange
-            exchange = self.exchanges.get(position.exchange)
-            if exchange:
-                current_data = exchange.get_candles(position.symbol, limit=1)
-                if not current_data.empty:
-                    current_price = current_data['close'].iloc[-1]
+        """Update current prices for all open positions"""
+        try:
+            for position in self.risk_manager.get_open_positions():
+                # Get current price from exchange
+                exchange = self.exchanges.get(position.exchange)
+                if exchange:
+                    current_data = exchange.get_candles(position.symbol, limit=1)
+                    if not current_data.empty:
+                        current_price = current_data['close'].iloc[-1]
                     
-                    # Update position
-                    self.risk_manager.update_position_price(position.position_id, current_price)
+                        # Update position
+                        self.risk_manager.update_position_price(position.position_id, current_price)
                     
-                    # Check for stop loss or take profit
-                    if position.side == 'buy':
-                        if current_price <= position.stop_loss or current_price >= position.take_profit:
-                            self.close_position(position, current_price)
-                    else:
-                        if current_price >= position.stop_loss or current_price <= position.take_profit:
-                            self.close_position(position, current_price)
+                        # Check for stop loss or take profit
+                        if position.side == 'buy':
+                            if current_price <= position.stop_loss or current_price >= position.take_profit:
+                                self.close_position(position, current_price)
+                        else:
+                            if current_price >= position.stop_loss or current_price <= position.take_profit:
+                                self.close_position(position, current_price)
         
-        # Save updated positions
-        save_positions(self.risk_manager.user_id, self.risk_manager.positions)
+            # Save updated positions
+            save_positions(self.risk_manager.user_id, self.risk_manager.positions)
         
-    except Exception as e:
-        logger.error(f"Error updating positions: {e}")
+        except Exception as e:
+            logger.error(f"Error updating positions: {e}")
 
     def close_position(self, position: Position, close_price: float):
         """Close a position"""
